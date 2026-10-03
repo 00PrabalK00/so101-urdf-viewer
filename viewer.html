@@ -114,7 +114,7 @@ import URDFLoader from 'urdf-loader';
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1e1f24);
 const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.001, 10);
-camera.position.set(0.45, 0.35, 0.45);
+camera.position.set(0.75, 0.45, 0.6);
 const renderer = new THREE.WebGLRenderer({ antialias:true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(devicePixelRatio);
@@ -124,7 +124,7 @@ labelRenderer.setSize(innerWidth, innerHeight);
 Object.assign(labelRenderer.domElement.style, { position:'absolute', top:'0', pointerEvents:'none', zIndex:'1' });
 document.body.appendChild(labelRenderer.domElement);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0.15, 0);
+controls.target.set(0.2, 0.13, 0);
 controls.update();
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
@@ -146,6 +146,7 @@ const Y = new THREE.Vector3(0, 1, 0);
 function meshArrow(mat) {
   const g = new THREE.Group();
   g.add(new THREE.Mesh(shaftGeo, mat), new THREE.Mesh(headGeo, mat));
+  g.children.forEach(m => m.userData.helper = true);
   return g;
 }
 // length in metres, thickness = shaft radius in mm
@@ -236,6 +237,8 @@ const DH = [
 const DH_BASE_MM = [38.8353, 0, 0];
 const DH_LINKS = ['base_link', 'shoulder_link', 'upper_arm_link', 'lower_arm_link', 'wrist_link', 'gripper_link'];
 const DH_LABELS = ['{0} base (pan axis, table)', '{1}', '{2}', '{3}', '{4} wrist centre', '{5} tool (gripper tip)'];
+// {3} and {4} are only 0.18 mm apart, so one 3D label names both
+const DH_3D_LABELS = ['{0} base (pan axis, table)', '{1}', '{2}', '', '{3} + {4} wrist centre (0.18 mm apart)', '{5} tool (gripper tip)'];
 const D2R = Math.PI / 180;
 // A in metres so it composes with the scene; numHTML prints translations in mm.
 function dhA(theta, d, a, al) {
@@ -413,13 +416,26 @@ function label(text, cls) {
   return new CSS2DObject(d);
 }
 
+function tagMeshes(r) {
+  r.traverse(o => { if (o.isMesh && !o.userData.helper && !o.userData.origMat) o.userData.origMat = o.material; });
+}
+
+// keep the robot centred in the gap between the two side panels
+function updateViewOffset() {
+  const L = $('panel').offsetWidth, R = $('tf').classList.contains('hidden') ? 0 : $('tf').offsetWidth;
+  camera.setViewOffset(innerWidth, innerHeight, (R - L) / 2, 0, innerWidth, innerHeight);
+}
+
 function load(file) {
   if (robot) { world.remove(robot); robot = null; }
   linkAxes = []; linkLabels = []; jointAxes = []; jointLabels = [];
-  const loader = new URDFLoader();
+  // STL meshes finish loading after the URDF callback; style them once the manager is done
+  const manager = new THREE.LoadingManager();
+  manager.onLoad = () => { if (!robot) return; tagMeshes(robot); applyDisplay(); };
+  const loader = new URDFLoader(manager);
   loader.load(file, r => {
     robot = r; world.add(r);
-    r.traverse(o => { if (o.isMesh) { o.userData.origMat = o.material; } });
+    tagMeshes(r);
     // joints are all 0 right after loading: record each link's zero-pose rotation relative to {0}
     r.updateMatrixWorld(true);
     const rootInv = r.matrixWorld.clone().invert();
@@ -511,7 +527,7 @@ function applyDisplay() {
   linkLabels.forEach(l => {
     l.visible = $('showLinkLabels').checked && keep(l);
     const n = l.userData.link, i = DH_LINKS.indexOf(n);
-    const txt = fk ? (dh ? DH_LABELS[i] ?? '' : FK_FRAMES[n] ?? '') : n;
+    const txt = fk ? (dh ? DH_3D_LABELS[i] ?? '' : FK_FRAMES[n] ?? '') : n;
     l.element.textContent = fk && z ? txt.replace(/θ(\d)/, 'q$1') : txt;
     // keep the label on the frame origin it names
     l.position.set(0, 0, 0);
@@ -551,15 +567,17 @@ $('savePng').onclick = () => {
 $('file').onchange = e => load(e.target.value);
 $('showDims').oninput = applyDims;
 $('conv').onchange = () => { applyDisplay(); buildTransforms($('file').value); };
-$('tfToggle').onclick = () => $('tf').classList.toggle('hidden');
+$('tfToggle').onclick = () => { $('tf').classList.toggle('hidden'); updateViewOffset(); };
 $('zero').onclick = () => { document.querySelectorAll('#joints input').forEach(i => { i.value = 0; i.oninput(); }); };
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight); labelRenderer.setSize(innerWidth, innerHeight);
+  updateViewOffset();
 });
 // optional ?conv=dh|zup|urdf in the URL
 const qs = new URLSearchParams(location.search);
 if (['dh','zup','urdf'].includes(qs.get('conv'))) $('conv').value = qs.get('conv');
+updateViewOffset();
 load($('file').value);
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); labelRenderer.render(scene, camera); });
 </script>
