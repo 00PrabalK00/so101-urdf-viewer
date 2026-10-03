@@ -82,18 +82,20 @@
 <button id="tfToggle">Transforms ⇆</button>
 <div id="tf">
   <h2>Consecutive transforms ⁱ⁻¹Tᵢ</h2>
-  <div class="note">ⁱ⁻¹Tᵢ = Trans(xyz) · Rot(rpy) · Rz(θᵢ). Lengths in mm. cᵢ = cos θᵢ, sᵢ = sin θᵢ.
-    Values are read live from the loaded URDF.</div>
   <div class="opts">
+    <label>Frame convention
+      <select id="conv">
+        <option value="zup" selected>Z-up: every frame parallel to {0} at zero pose</option>
+        <option value="urdf">URDF: Z = joint axis (as in the file)</option>
+      </select></label>
+    <div class="note" id="convNote"></div>
     <label><input type="checkbox" id="showDims" checked> Show link lengths in 3D</label>
-    <label><input type="checkbox" id="unflip"> Unflip {1} (Z1 up, X1 forward, θ1′ = −θ1)</label>
-    <div class="note">Unflipping changes only ⁰T₁ and ¹T₂. ⁰T_E is identical.</div>
   </div>
   <div class="note">Colours: <span style="color:#ffd27a">θ-dependent</span> · <span style="color:#7fe0ff">translation (mm)</span> · <span style="color:#6c6c74">constant</span></div>
   <div id="pairs"></div>
   <div class="card">
     <h3>⁰T_E</h3>
-    <div class="sub">= ⁰T₁ · ¹T₂ · ²T₃ · ³T₄ · ⁴T₅ · ⁵T_E (at current θ)</div>
+    <div class="sub">= ⁰T₁ · ¹T₂ · ²T₃ · ³T₄ · ⁴T₅ · ⁵T_E (at current joint values)</div>
     <div class="mat num" id="full"></div>
     <div class="tip" id="tip"></div>
   </div>
@@ -170,24 +172,44 @@ const FK_FRAMES = {
 
 // Consecutive FK pairs (top 3 rows; bottom row is always 0 0 0 1). Symbolic forms were derived
 // by hand from so101_new_calib.urdf and checked element-wise against the URDF and so101_new_calib.xml.
+// Z-up convention: every frame is parallel to {0} when all joints are 0 (Z up, X forward),
+// so each ⁱ⁻¹Tᵢ = Trans(d) · Rot(axis, qᵢ). Offsets d are the zero-pose differences between
+// frame origins in {0}; checked against the URDF chain at 500 random poses (error < 0.005 mm).
+// q1 = −θ1 and q5 = −θ5 because those URDF axes point along −Z and −X.
 const CHAIN = [
-  { joint:'shoulder_pan', name:'⁰T₁', altName:'⁰T₁′', from:'{0} base', to:'{1} shoulder_pan',
+  { joint:'shoulder_pan', name:'⁰T₁', from:'{0} base', to:'{1} shoulder_pan',
     sym:   [['-c1','s1','0','38.84'], ['s1','c1','0','0'], ['0','0','-1','62.40']],
-    symAlt:[['c1′','-s1′','0','38.84'], ['s1′','c1′','0','0'], ['0','0','1','62.40']] },
-  { joint:'shoulder_lift', name:'¹T₂', altName:'¹′T₂', from:'{1} shoulder_pan', to:'{2} shoulder_lift',
+    zup:   [['c1','-s1','0','38.84'], ['s1','c1','0','0'], ['0','0','1','62.40']],
+    zq:'q1 = −θ1, rotation about Z', zsign:-1 },
+  { joint:'shoulder_lift', name:'¹T₂', from:'{1} shoulder_pan', to:'{2} shoulder_lift',
     sym:   [['s2','c2','0','-30.40'], ['0','0','1','-18.28'], ['c2','-s2','0','-54.20']],
-    symAlt:[['-s2','-c2','0','30.40'], ['0','0','1','-18.28'], ['-c2','s2','0','54.20']] },
+    zup:   [['c2','0','s2','30.40'], ['0','1','0','-18.28'], ['-s2','0','c2','54.20']],
+    zq:'q2 = θ2, rotation about Y', zsign:1 },
   { joint:'elbow_flex', name:'²T₃', from:'{2} shoulder_lift', to:'{3} elbow_flex',
-    sym:   [['-s3','-c3','0','-112.57'], ['c3','-s3','0','-28.00'], ['0','0','1','0']] },
+    sym:   [['-s3','-c3','0','-112.57'], ['c3','-s3','0','-28.00'], ['0','0','1','0']],
+    zup:   [['c3','0','s3','28.00'], ['0','1','0','0'], ['-s3','0','c3','112.57']],
+    zq:'q3 = θ3, rotation about Y', zsign:1 },
   { joint:'wrist_flex', name:'³T₄', from:'{3} elbow_flex', to:'{4} wrist_flex',
-    sym:   [['s4','c4','0','-134.90'], ['-c4','s4','0','5.20'], ['0','0','1','0']] },
+    sym:   [['s4','c4','0','-134.90'], ['-c4','s4','0','5.20'], ['0','0','1','0']],
+    zup:   [['c4','0','s4','134.90'], ['0','1','0','0'], ['-s4','0','c4','5.20']],
+    zq:'q4 = θ4, rotation about Y', zsign:1 },
   { joint:'wrist_roll', name:'⁴T₅', from:'{4} wrist_flex', to:'{5} wrist_roll',
     eq:'φ = θ5 − 0.0487 rad (2.79°, pitch offset in the URDF rpy)',
-    sym:   [['-cos φ','sin φ','0','0'], ['0','0','1','-61.10'], ['sin φ','cos φ','0','18.10']] },
+    sym:   [['-cos φ','sin φ','0','0'], ['0','0','1','-61.10'], ['sin φ','cos φ','0','18.10']],
+    zup:   [['1','0','0','61.10'], ['0','c5','-s5','18.10'], ['0','s5','c5','0']],
+    zq:'q5 = −θ5, rotation about X', zsign:-1 },
   { joint:'gripper_frame_joint', name:'⁵T_E', from:'{5} wrist_roll', to:'{E} end-effector',
     eq:'fixed — no joint variable',
-    sym:   [['-1','0','0','-7.90'], ['0','1','0','-0.22'], ['0','0','-1','-98.13']] },
+    sym:   [['-1','0','0','-7.90'], ['0','1','0','-0.22'], ['0','0','-1','-98.13']],
+    zup:   [['1','0','0','98.13'], ['0','1','0','0.17'], ['0','0','1','-7.90']],
+    zq:'fixed — no joint variable' },
 ];
+const CONV_NOTE = {
+  zup: 'ⁱ⁻¹Tᵢ = Trans(d) · Rot(axis, qᵢ). All frames have Z up and X forward at zero pose. cᵢ = cos qᵢ, sᵢ = sin qᵢ. Not DH: Z is not the joint axis for joints 2–5.',
+  urdf: 'ⁱ⁻¹Tᵢ = Trans(xyz) · Rot(rpy) · Rz(θᵢ), exactly as in the URDF. cᵢ = cos θᵢ, sᵢ = sin θᵢ.',
+};
+// Per-link rotation that turns a URDF link frame into its Z-up frame: Cᵢ = (⁰Rᵢ at zero pose)ᵀ.
+const zupRot = {};
 
 const isVar = s => /[cs]\d|φ/.test(s);
 function symHTML(rows) {
@@ -226,7 +248,7 @@ function buildTransforms(file) {
         <span>limits</span><span>${lim}</span>
         <span>offset length</span><span><b>${len.toFixed(2)} mm</b></span>
       </div>
-      ${exact ? `<div class="mlabel">Symbolic</div>${p.eq ? `<div class="eq">${p.eq}</div>` : ''}<div class="eq" data-eq="${p.joint}"></div><div class="mat" data-sym="${p.joint}"></div>` : ''}
+      ${exact ? `<div class="mlabel">Symbolic</div><div class="eq" data-eq="${p.joint}"></div><div class="mat" data-sym="${p.joint}"></div>` : ''}
       <div class="mlabel">Numeric at current θ</div>
       <div class="theta" data-th="${p.joint}"></div>
       <div class="mat num" data-joint="${p.joint}"></div>`;
@@ -241,28 +263,34 @@ function buildTransforms(file) {
   updateTransforms(); applyDims();
 }
 
-// {1′} = {1} rotated 180° about Y: ⁰T₁′ = ⁰T₁·F and ¹′T₂ = F·¹T₂ (F = F⁻¹), so the chain product is unchanged.
-const F = new THREE.Matrix4().makeRotationY(Math.PI);
+const zup = () => $('conv').value === 'zup';
+// Z-up matrix from the live URDF one: ⁱ⁻¹T′ᵢ = Cᵢ₋₁⁻¹ · ⁱ⁻¹Tᵢ · Cᵢ (C = rotation-only).
+function toZup(j, m) {
+  const child = j.children.find(c => c.isURDFLink);
+  const cp = zupRot[j.parent.name] ?? new THREE.Matrix4(), cc = zupRot[child?.name] ?? new THREE.Matrix4();
+  return cp.clone().invert().multiply(m).multiply(cc);
+}
 function updateTransforms() {
   if (!robot) return;
-  const unflip = $('unflip').checked;
-  const fl = s => unflip ? s.replace('{1}', '{1′}') : s;
+  const z = zup();
+  $('convNote').textContent = CONV_NOTE[z ? 'zup' : 'urdf'];
   const full = new THREE.Matrix4();
-  for (const p of CHAIN) {
-    const j = robot.joints[p.joint]; if (!j) continue;
-    j.updateMatrix(); full.multiply(j.matrix);
-    const alt = unflip && p.symAlt;
-    let m = j.matrix, ang = +j.angle, th = 'θ' + (CHAIN.indexOf(p) + 1);
-    if (alt && p.joint === 'shoulder_pan') { m = j.matrix.clone().multiply(F); ang = -ang; th = 'θ1′'; }
-    if (alt && p.joint === 'shoulder_lift') m = F.clone().multiply(j.matrix);
+  CHAIN.forEach((p, i) => {
+    const j = robot.joints[p.joint]; if (!j) return;
+    j.updateMatrix();
+    const m = z ? toZup(j, j.matrix) : j.matrix;
+    full.multiply(m);
     const q = s => document.querySelector(s);
-    q(`[data-h="${p.joint}"]`).textContent = alt ? p.altName : p.name;
-    q(`[data-sub="${p.joint}"]`).textContent = `${fl(p.from)} → ${fl(p.to)}`;
-    const sym = q(`[data-sym="${p.joint}"]`); if (sym) sym.innerHTML = symHTML(alt ? p.symAlt : p.sym);
-    const eq = q(`[data-eq="${p.joint}"]`); if (eq) eq.textContent = alt && p.joint === 'shoulder_pan' ? 'θ1′ = −θ1' : '';
-    q(`[data-th="${p.joint}"]`).textContent = j.jointType === 'fixed' ? 'fixed' : `${th} = ${ang.toFixed(3)} rad  (${(ang*180/Math.PI).toFixed(1)}°)`;
+    q(`[data-h="${p.joint}"]`).textContent = p.name;
+    q(`[data-sub="${p.joint}"]`).textContent = `${p.from} → ${p.to}`;
+    const sym = q(`[data-sym="${p.joint}"]`); if (sym) sym.innerHTML = symHTML(z ? p.zup : p.sym);
+    const eq = q(`[data-eq="${p.joint}"]`); if (eq) eq.textContent = z ? p.zq : (p.eq ?? '');
+    const ang = +j.angle, n = i + 1;
+    q(`[data-th="${p.joint}"]`).textContent = j.jointType === 'fixed' ? 'fixed' : z
+      ? `θ${n} = ${ang.toFixed(3)} rad  →  q${n} = ${(p.zsign * ang).toFixed(3)} rad  (${(p.zsign * ang * 180 / Math.PI).toFixed(1)}°)`
+      : `θ${n} = ${ang.toFixed(3)} rad  (${(ang * 180 / Math.PI).toFixed(1)}°)`;
     q(`[data-joint="${p.joint}"]`).innerHTML = numHTML(m);
-  }
+  });
   const t = new THREE.Vector3().setFromMatrixPosition(full).multiplyScalar(1000);
   $('full').innerHTML = numHTML(full);
   $('tip').textContent = `end-effector in {0}: (${t.x.toFixed(1)}, ${t.y.toFixed(1)}, ${t.z.toFixed(1)}) mm`;
@@ -281,6 +309,14 @@ function load(file) {
   loader.load(file, r => {
     robot = r; world.add(r);
     r.traverse(o => { if (o.isMesh) { o.userData.origMat = o.material; } });
+    // joints are all 0 right after loading: record each link's zero-pose rotation relative to {0}
+    r.updateMatrixWorld(true);
+    const rootInv = r.matrixWorld.clone().invert();
+    for (const k in zupRot) delete zupRot[k];
+    for (const [name, link] of Object.entries(r.links)) {
+      const rel = rootInv.clone().multiply(link.matrixWorld);
+      zupRot[name] = new THREE.Matrix4().extractRotation(rel).transpose();
+    }
     for (const [name, link] of Object.entries(r.links)) {
       const ax = makeFrame(); ax.userData.link = name; link.add(ax); linkAxes.push(ax);
       const l = label(name); l.userData.link = name; link.add(l); linkLabels.push(l);
@@ -336,16 +372,17 @@ function applyDisplay() {
       o.material = $('transparent').checked ? meshMat : o.userData.origMat;
     }
   });
-  const fk = $('fkMode').checked, unflip = $('unflip').checked;
+  const fk = $('fkMode').checked, z = zup();
   const keep = o => !fk || o.userData.link in FK_FRAMES;
   linkAxes.forEach(f => {
     f.visible = $('showLinkAxes').checked && keep(f); f.children.forEach(a => sizeArrow(a, s, t));
-    if (f.userData.link === 'shoulder_link') f.rotation.y = unflip ? Math.PI : 0;
+    if (z && zupRot[f.userData.link]) f.quaternion.setFromRotationMatrix(zupRot[f.userData.link]);
+    else f.quaternion.identity();
   });
   linkLabels.forEach(l => {
     l.visible = $('showLinkLabels').checked && keep(l);
-    l.element.textContent = fk ? FK_FRAMES[l.userData.link] ?? '' : l.userData.link;
-    if (fk && unflip && l.userData.link === 'shoulder_link') l.element.textContent = '{1′} shoulder_pan θ1′ = −θ1';
+    const txt = fk ? FK_FRAMES[l.userData.link] ?? '' : l.userData.link;
+    l.element.textContent = fk && z ? txt.replace(/θ(\d)/, 'q$1') : txt;
   });
   jointAxes.forEach(a => { a.visible = $('showJointAxis').checked && !fk; sizeArrow(a, s * 1.5, t * 0.8); });
   jointLabels.forEach(l => l.visible = $('showJointLabels').checked && !fk);
@@ -380,7 +417,7 @@ $('savePng').onclick = () => {
   .forEach(id => $(id).addEventListener('input', applyDisplay));
 $('file').onchange = e => load(e.target.value);
 $('showDims').oninput = applyDims;
-$('unflip').oninput = () => { applyDisplay(); updateTransforms(); };
+$('conv').onchange = () => { applyDisplay(); updateTransforms(); };
 $('tfToggle').onclick = () => $('tf').classList.toggle('hidden');
 $('zero').onclick = () => { document.querySelectorAll('#joints input').forEach(i => { i.value = 0; i.oninput(); }); };
 addEventListener('resize', () => {

@@ -19,7 +19,7 @@ Then open http://localhost:8765/viewer.html (needs internet to load three.js fro
 - Thick, resizable frame axes (X red, Y green, Z blue), joint axis arrows, link/joint labels
 - Transparent / hidden meshes, white background, **Save PNG** with labels
 - Link/joint tree with origins, rpy and axes
-- **Transforms panel**: each consecutive ⁱ⁻¹Tᵢ (raw URDF origin/rpy/axis/limits, symbolic matrix, live numeric matrix), full ⁰T_E and end-effector position, link-length dimension lines in 3D; colour-coded matrix grids; "Unflip {1}" toggle (Z1 up, θ1′ = −θ1)
+- **Transforms panel**: each consecutive ⁱ⁻¹Tᵢ (raw URDF origin/rpy/axis/limits, symbolic matrix, live numeric matrix), full ⁰T_E and end-effector position, link-length dimension lines in 3D; colour-coded matrix grids; frame convention switch: **Z-up** (default, every frame parallel to {0} at zero pose, Z up, X forward) or **URDF** (Z = joint axis)
 
 | Frame | Link | Joint |
 |---|---|---|
