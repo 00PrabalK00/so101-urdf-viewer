@@ -94,6 +94,7 @@
         <option value="dh">DH (standard / Spong): Z = joint axis, X = common normal</option>
       </select></label>
     <div class="note" id="convNote"></div>
+    <label id="flipWrap"><input type="checkbox" id="flipPan" checked> Flip {1} so Z1 points up (q1 = −θ1)</label>
     <label><input type="checkbox" id="showDims" checked> Show link lengths in 3D</label>
   </div>
   <div class="note">Colours: <span style="color:#ffd27a">θ-dependent</span> · <span style="color:#7fe0ff">translation (mm)</span> · <span style="color:#6c6c74">constant</span></div>
@@ -186,11 +187,15 @@ const CHAIN = [
   { joint:'shoulder_pan', name:'⁰T₁', from:'{0} base', to:'{1} shoulder_pan',
     sym:   [['-c1','s1','0','38.84'], ['s1','c1','0','0'], ['0','0','-1','62.40']],
     zup:   [['c1','-s1','0','38.84'], ['s1','c1','0','0'], ['0','0','1','62.40']],
-    zq:'q1 = −θ1, rotation about Z', zsign:-1 },
+    zq:'q1 = −θ1, rotation about Z', zsign:-1,
+    flip:  [['c1','-s1','0','38.84'], ['s1','c1','0','0'], ['0','0','1','62.40']],
+    flipq:'q1 = −θ1 ({1} turned 180° about Y so Z1 points up)' },
   { joint:'shoulder_lift', name:'¹T₂', from:'{1} shoulder_pan', to:'{2} shoulder_lift',
     sym:   [['s2','c2','0','-30.40'], ['0','0','1','-18.28'], ['c2','-s2','0','-54.20']],
     zup:   [['c2','0','s2','30.40'], ['0','1','0','-18.28'], ['-s2','0','c2','54.20']],
-    zq:'q2 = θ2, rotation about Y', zsign:1 },
+    zq:'q2 = θ2, rotation about Y', zsign:1,
+    flip:  [['-s2','-c2','0','30.40'], ['0','0','1','-18.28'], ['-c2','s2','0','54.20']],
+    flipq:'changes because {1} is flipped; θ2 unchanged' },
   { joint:'elbow_flex', name:'²T₃', from:'{2} shoulder_lift', to:'{3} elbow_flex',
     sym:   [['-s3','-c3','0','-112.57'], ['c3','-s3','0','-28.00'], ['0','0','1','0']],
     zup:   [['c3','0','s3','28.00'], ['0','1','0','0'], ['-s3','0','c3','112.57']],
@@ -355,16 +360,26 @@ function buildDH(exact) {
 
 const isDH = () => $('conv').value === 'dh';
 const zup = () => $('conv').value === 'zup';
-// Z-up matrix from the live URDF one: ⁱ⁻¹T′ᵢ = Cᵢ₋₁⁻¹ · ⁱ⁻¹Tᵢ · Cᵢ (C = rotation-only).
-function toZup(j, m) {
+// URDF mode with "flip": {1} is turned 180° about Y (Z1 up, X1 forward); only ⁰T₁ and ¹T₂ change.
+const FLIP = new THREE.Matrix4().makeRotationY(Math.PI);
+const flipped = () => $('conv').value === 'urdf' && $('flipPan').checked;
+// rotation that turns a URDF link frame into the displayed frame for the current convention
+function convRot(name) {
+  if (zup()) return zupRot[name];
+  if (flipped() && name === 'shoulder_link') return FLIP;
+  return null;
+}
+// displayed matrix from the live URDF one: ⁱ⁻¹T′ᵢ = Cᵢ₋₁⁻¹ · ⁱ⁻¹Tᵢ · Cᵢ (C = rotation-only).
+function toConv(j, m) {
   const child = j.children.find(c => c.isURDFLink);
-  const cp = zupRot[j.parent.name] ?? new THREE.Matrix4(), cc = zupRot[child?.name] ?? new THREE.Matrix4();
+  const cp = convRot(j.parent.name) ?? new THREE.Matrix4(), cc = convRot(child?.name) ?? new THREE.Matrix4();
   return cp.clone().invert().multiply(m).multiply(cc);
 }
 function updateTransforms() {
   if (!robot) return;
   const z = zup();
   $('convNote').textContent = CONV_NOTE[$('conv').value];
+  $('flipWrap').style.display = $('conv').value === 'urdf' ? '' : 'none';
   if (isDH()) {
     const full = dhBase();
     DH.forEach((p, i) => {
@@ -392,15 +407,15 @@ function updateTransforms() {
   CHAIN.forEach((p, i) => {
     const j = robot.joints[p.joint]; if (!j) return;
     j.updateMatrix();
-    const m = z ? toZup(j, j.matrix) : j.matrix;
+    const m = toConv(j, j.matrix), fl = flipped() && p.flip;
     full.multiply(m);
     const q = s => document.querySelector(s);
     q(`[data-h="${p.joint}"]`).textContent = p.name;
     q(`[data-sub="${p.joint}"]`).textContent = `${p.from} → ${p.to}`;
-    const sym = q(`[data-sym="${p.joint}"]`); if (sym) sym.innerHTML = symHTML(z ? p.zup : p.sym);
-    const eq = q(`[data-eq="${p.joint}"]`); if (eq) eq.textContent = z ? p.zq : (p.eq ?? '');
+    const sym = q(`[data-sym="${p.joint}"]`); if (sym) sym.innerHTML = symHTML(z ? p.zup : fl ? p.flip : p.sym);
+    const eq = q(`[data-eq="${p.joint}"]`); if (eq) eq.textContent = z ? p.zq : fl ? p.flipq : (p.eq ?? '');
     const ang = +j.angle, n = i + 1;
-    q(`[data-th="${p.joint}"]`).textContent = j.jointType === 'fixed' ? 'fixed' : z
+    q(`[data-th="${p.joint}"]`).textContent = j.jointType === 'fixed' ? 'fixed' : z || (fl && p.zsign < 0)
       ? `θ${n} = ${ang.toFixed(3)} rad  →  q${n} = ${(p.zsign * ang).toFixed(3)} rad  (${(p.zsign * ang * 180 / Math.PI).toFixed(1)}°)`
       : `θ${n} = ${ang.toFixed(3)} rad  (${(ang * 180 / Math.PI).toFixed(1)}°)`;
     q(`[data-joint="${p.joint}"]`).innerHTML = numHTML(m);
@@ -522,13 +537,13 @@ function applyDisplay() {
     const n = f.userData.link;
     f.position.set(0, 0, 0); f.quaternion.identity();
     if (dh && dhRel[n]) dhRel[n].decompose(f.position, f.quaternion, new THREE.Vector3());
-    else if (z && zupRot[n]) f.quaternion.setFromRotationMatrix(zupRot[n]);
+    else if (convRot(n)) f.quaternion.setFromRotationMatrix(convRot(n));
   });
   linkLabels.forEach(l => {
     l.visible = $('showLinkLabels').checked && keep(l);
     const n = l.userData.link, i = DH_LINKS.indexOf(n);
     const txt = fk ? (dh ? DH_3D_LABELS[i] ?? '' : FK_FRAMES[n] ?? '') : n;
-    l.element.textContent = fk && z ? txt.replace(/θ(\d)/, 'q$1') : txt;
+    l.element.textContent = fk && (z || (flipped() && n === 'shoulder_link')) ? txt.replace(/θ(\d)/, 'q$1') : txt;
     // keep the label on the frame origin it names
     l.position.set(0, 0, 0);
     if (dh && dhRel[n]) l.position.setFromMatrixPosition(dhRel[n]);
@@ -567,6 +582,7 @@ $('savePng').onclick = () => {
 $('file').onchange = e => load(e.target.value);
 $('showDims').oninput = applyDims;
 $('conv').onchange = () => { applyDisplay(); buildTransforms($('file').value); };
+$('flipPan').onchange = () => { applyDisplay(); updateTransforms(); };
 $('tfToggle').onclick = () => { $('tf').classList.toggle('hidden'); updateViewOffset(); };
 $('zero').onclick = () => { document.querySelectorAll('#joints input').forEach(i => { i.value = 0; i.oninput(); }); };
 addEventListener('resize', () => {
