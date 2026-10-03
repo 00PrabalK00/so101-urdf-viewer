@@ -14,7 +14,7 @@ Then open http://localhost:8765/viewer.html (needs internet to load three.js fro
 
 ## Features
 
-- **FK frames only** mode: shows `{0}` base, `{1}`–`{5}` one per revolute joint (Z = rotation axis), `{E}` end-effector
+- **FK frames only** mode: shows `{0}` base, `{1}`–`{6}` one per revolute joint (Z = rotation axis), `{E}` end-effector
 - Joint sliders with URDF limits
 - Thick, resizable frame axes (X red, Y green, Z blue), joint axis arrows, link/joint labels
 - Transparent / hidden meshes, white background, **Save PNG** with labels
@@ -28,6 +28,7 @@ Then open http://localhost:8765/viewer.html (needs internet to load three.js fro
 | {3} | lower_arm_link | elbow_flex θ3 |
 | {4} | wrist_link | wrist_flex θ4 |
 | {5} | gripper_link | wrist_roll θ5 |
+| {6} | moving_jaw_so101_v1_link | gripper θ6 (branches from {5}, jaw only) |
 | {E} | gripper_frame_link | – |
 
 ## Credits

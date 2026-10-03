@@ -34,7 +34,7 @@
     <option>so101_leader_new_calib.urdf</option>
   </select>
   <h3>Display</h3>
-  <label><input type="checkbox" id="fkMode" checked> <b>FK frames only</b> ({0}…{5}, {E})</label>
+  <label><input type="checkbox" id="fkMode" checked> <b>FK frames only</b> ({0}…{6}, {E})</label>
   <label><input type="checkbox" id="lightBg"> White background</label>
   <button id="savePng">Save PNG (with labels)</button>
   <label><input type="checkbox" id="showMesh" checked> Meshes</label>
@@ -118,6 +118,7 @@ const FK_FRAMES = {
   lower_arm_link:     '{3} elbow_flex θ3',
   wrist_link:         '{4} wrist_flex θ4',
   gripper_link:       '{5} wrist_roll θ5',
+  moving_jaw_so101_v1_link: '{6} gripper θ6',
   gripper_frame_link: '{E} end-effector',
 };
 
