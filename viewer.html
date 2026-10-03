@@ -42,7 +42,11 @@
   .mat.num span.z { color:#6c6c74; }
   .theta { font:14px ui-monospace, Consolas, monospace; color:#ffd27a; margin:4px 0; }
   .eq { font-size:13px; color:#cfcfd6; margin:4px 0; }
-  .tip { font:15px ui-monospace, Consolas, monospace; color:#7fe0ff; margin-top:8px; }
+  .tip { font:15px ui-monospace, Consolas, monospace; color:#7fe0ff; margin-top:8px; white-space:pre-line; }
+  .dht { border-collapse:collapse; font:14px ui-monospace, Consolas, monospace; width:100%; }
+  .dht th, .dht td { border-bottom:1px solid #2c2d33; padding:4px 6px; text-align:right; }
+  .dht th { color:#9a9aa3; font-weight:600; }
+  .dht td:nth-child(2) { color:#ffd27a; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -87,6 +91,7 @@
       <select id="conv">
         <option value="zup" selected>Z-up: every frame parallel to {0} at zero pose</option>
         <option value="urdf">URDF: Z = joint axis (as in the file)</option>
+        <option value="dh">DH (standard / Spong): Z = joint axis, X = common normal</option>
       </select></label>
     <div class="note" id="convNote"></div>
     <label><input type="checkbox" id="showDims" checked> Show link lengths in 3D</label>
@@ -94,8 +99,8 @@
   <div class="note">Colours: <span style="color:#ffd27a">θ-dependent</span> · <span style="color:#7fe0ff">translation (mm)</span> · <span style="color:#6c6c74">constant</span></div>
   <div id="pairs"></div>
   <div class="card">
-    <h3>⁰T_E</h3>
-    <div class="sub">= ⁰T₁ · ¹T₂ · ²T₃ · ³T₄ · ⁴T₅ · ⁵T_E (at current joint values)</div>
+    <h3 id="fullTitle">⁰T_E</h3>
+    <div class="sub" id="fullSub"></div>
     <div class="mat num" id="full"></div>
     <div class="tip" id="tip"></div>
   </div>
@@ -207,9 +212,40 @@ const CHAIN = [
 const CONV_NOTE = {
   zup: 'ⁱ⁻¹Tᵢ = Trans(d) · Rot(axis, qᵢ). All frames have Z up and X forward at zero pose. cᵢ = cos qᵢ, sᵢ = sin qᵢ. Not DH: Z is not the joint axis for joints 2–5.',
   urdf: 'ⁱ⁻¹Tᵢ = Trans(xyz) · Rot(rpy) · Rz(θᵢ), exactly as in the URDF. cᵢ = cos θᵢ, sᵢ = sin θᵢ.',
+  dh: 'Standard DH (Spong): zᵢ₋₁ on joint i axis, xᵢ along the common normal from zᵢ₋₁ to zᵢ. Pink = aᵢ, cyan = dᵢ in 3D. {5} is the tool frame at the gripper tip.',
 };
 // Per-link rotation that turns a URDF link frame into its Z-up frame: Cᵢ = (⁰Rᵢ at zero pose)ᵀ.
 const zupRot = {};
+
+// Standard (Spong) DH: Aᵢ = Rz(θᵢ)·Tz(dᵢ)·Tx(aᵢ)·Rx(αᵢ), θᵢ = s·qᵢ + offset (qᵢ = URDF/motor angle).
+// Derived from the zero-pose joint axis lines of so101_new_calib.urdf: every frame checked for
+// x ⊥ z₋₁, x ⊥ z, x meets z₋₁, z on the joint axis; DH chain matches the URDF to < 0.005 mm at 500 poses.
+// {0}: on the pan axis at table level (base_link + 38.84 mm in x). {5}: tool frame at the gripper tip.
+const DH = [
+  { joint:'shoulder_pan',  s:-1, off:0,        d:116.6,    a:30.3992,  al:-90,
+    sym:[['c1','0','-s1','30.40·c1'], ['s1','0','c1','30.40·s1'], ['0','-1','0','116.60']] },
+  { joint:'shoulder_lift', s: 1, off:-76.0323, d:0,        a:116.0,    al:0,
+    sym:[['c2','-s2','0','116.00·c2'], ['s2','c2','0','116.00·s2'], ['0','0','1','0']] },
+  { joint:'elbow_flex',    s: 1, off:73.8248,  d:0,        a:135.0002, al:0,
+    sym:[['c3','-s3','0','135.00·c3'], ['s3','c3','0','135.00·s3'], ['0','0','1','0']] },
+  { joint:'wrist_flex',    s: 1, off:92.2075,  d:-0.1768,  a:0,        al:90,
+    sym:[['c4','0','s4','0'], ['s4','0','-c4','0'], ['0','1','0','-0.18']] },
+  { joint:'wrist_roll',    s:-1, off:1.2149,   d:159.2273, a:7.9024,   al:0,
+    sym:[['c5','-s5','0','7.90·c5'], ['s5','c5','0','7.90·s5'], ['0','0','1','159.23']] },
+];
+const DH_BASE_MM = [38.8353, 0, 0];
+const DH_LINKS = ['base_link', 'shoulder_link', 'upper_arm_link', 'lower_arm_link', 'wrist_link', 'gripper_link'];
+const DH_LABELS = ['{0} base (pan axis, table)', '{1}', '{2}', '{3}', '{4} wrist centre', '{5} tool (gripper tip)'];
+const D2R = Math.PI / 180;
+// A in metres so it composes with the scene; numHTML prints translations in mm.
+function dhA(theta, d, a, al) {
+  const ct = Math.cos(theta), st = Math.sin(theta), ca = Math.cos(al), sa = Math.sin(al);
+  return new THREE.Matrix4().set(ct, -st*ca, st*sa, a/1000*ct, st, ct*ca, -ct*sa, a/1000*st, 0, sa, ca, d/1000, 0, 0, 0, 1);
+}
+const dhBase = () => new THREE.Matrix4().makeTranslation(DH_BASE_MM[0]/1000, DH_BASE_MM[1]/1000, DH_BASE_MM[2]/1000);
+const dhTheta = (p, q) => p.s * q + p.off * D2R;
+// DH frame i expressed in its URDF link frame (constant): Cᵢ = (⁰Lᵢ at zero)⁻¹ · ⁰Fᵢ(zero).
+const dhRel = {};
 
 const isVar = s => /[cs]\d|φ/.test(s);
 function symHTML(rows) {
@@ -231,6 +267,7 @@ function buildTransforms(file) {
   const box = $('pairs'); box.innerHTML = '';
   dimObjs.forEach(o => o.parent && o.parent.remove(o)); dimObjs = [];
   const exact = file === 'so101_new_calib.urdf';
+  if (isDH()) { buildDH(exact); updateTransforms(); applyDims(); return; }
   for (const p of CHAIN) {
     const j = robot.joints[p.joint];
     if (!j) continue;
@@ -263,6 +300,57 @@ function buildTransforms(file) {
   updateTransforms(); applyDims();
 }
 
+const SUB = ['₀','₁','₂','₃','₄','₅'], SUP = ['⁰','¹','²','³','⁴','⁵'];
+function dimLine(parent, from, to, text, color) {
+  if (from.distanceTo(to) < 0.0005) return;
+  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+  const line = new THREE.Line(geo, new THREE.LineDashedMaterial({ color, dashSize:0.004, gapSize:0.003, depthTest:false }));
+  line.computeLineDistances(); line.renderOrder = 10; parent.add(line); dimObjs.push(line);
+  const l = label(text, 'dim'); l.element.style.color = '#' + new THREE.Color(color).getHexString();
+  l.position.copy(from).add(to).multiplyScalar(0.5); parent.add(l); dimObjs.push(l);
+}
+
+function buildDH(exact) {
+  const box = $('pairs');
+  // DH parameter table
+  const rows = DH.map((p, i) => `<tr><td>${i+1}</td><td>${p.s < 0 ? '−' : ''}q${i+1}${p.off ? (p.off > 0 ? ' + ' : ' − ') + Math.abs(p.off).toFixed(2) + '°' : ''}</td>
+    <td>${p.d.toFixed(2)}</td><td>${p.a.toFixed(2)}</td><td>${p.al}°</td></tr>`).join('');
+  const table = document.createElement('div'); table.className = 'card';
+  table.innerHTML = `<h3>DH table</h3><div class="sub">Aᵢ = Rz(θᵢ) · Tz(dᵢ) · Tx(aᵢ) · Rx(αᵢ), lengths in mm, qᵢ = motor/URDF angle</div>
+    <table class="dht"><tr><th>i</th><th>θᵢ</th><th>dᵢ</th><th>aᵢ</th><th>αᵢ</th></tr>${rows}</table>
+    <div class="note" style="margin-top:6px">Base offset ᴮT₀ = Trans(38.84, 0, 0): {0} sits on the pan axis at table level.
+    q1 and q5 are negated because the URDF axes point along −Z and −X. Offsets come from the bent zero pose.</div>`;
+  box.appendChild(table);
+  // base card
+  const b = document.createElement('div'); b.className = 'card';
+  b.innerHTML = `<h3>ᴮT₀</h3><div class="sub">base_link → {0} base (fixed)</div>
+    <div class="mlabel">Matrix</div><div class="mat">${symHTML([['1','0','0','38.84'], ['0','1','0','0'], ['0','0','1','0']])}</div>`;
+  box.appendChild(b);
+  DH.forEach((p, i) => {
+    const div = document.createElement('div'); div.className = 'card';
+    div.innerHTML = `<h3>${SUP[i]}A${SUB[i+1]}</h3><div class="sub">${DH_LABELS[i]} → ${DH_LABELS[i+1]}  (joint ${p.joint})</div>
+      <div class="facts">
+        <span>θ${i+1}</span><span>${p.s < 0 ? '−' : ''}q${i+1}${p.off ? (p.off > 0 ? ' + ' : ' − ') + Math.abs(p.off).toFixed(4) + '°' : ''}</span>
+        <span>d${i+1}</span><span><b>${p.d.toFixed(2)} mm</b> (along z${i})</span>
+        <span>a${i+1}</span><span><b>${p.a.toFixed(2)} mm</b> (along x${i+1})</span>
+        <span>α${i+1}</span><span>${p.al}° (z${i} → z${i+1} about x${i+1})</span>
+      </div>
+      ${exact ? `<div class="mlabel">Symbolic (cᵢ = cos θᵢ, sᵢ = sin θᵢ)</div><div class="mat">${symHTML(p.sym)}</div>` : ''}
+      <div class="mlabel">Numeric at current q</div>
+      <div class="theta" data-th="dh${i}"></div>
+      <div class="mat num" data-joint="dh${i}"></div>`;
+    box.appendChild(div);
+    // d along z_{i-1} (fixed in frame i-1), a along x_i (fixed in frame i)
+    const fPrev = linkAxes.find(f => f.userData.link === DH_LINKS[i]);
+    const fCur = linkAxes.find(f => f.userData.link === DH_LINKS[i+1]);
+    if (fPrev && fCur) {
+      dimLine(fPrev, new THREE.Vector3(), new THREE.Vector3(0, 0, p.d/1000), `d${i+1} = ${p.d.toFixed(1)}`, 0x7fe0ff);
+      dimLine(fCur, new THREE.Vector3(-p.a/1000, 0, 0), new THREE.Vector3(), `a${i+1} = ${p.a.toFixed(1)}`, 0xff9de2);
+    }
+  });
+}
+
+const isDH = () => $('conv').value === 'dh';
 const zup = () => $('conv').value === 'zup';
 // Z-up matrix from the live URDF one: ⁱ⁻¹T′ᵢ = Cᵢ₋₁⁻¹ · ⁱ⁻¹Tᵢ · Cᵢ (C = rotation-only).
 function toZup(j, m) {
@@ -273,7 +361,30 @@ function toZup(j, m) {
 function updateTransforms() {
   if (!robot) return;
   const z = zup();
-  $('convNote').textContent = CONV_NOTE[z ? 'zup' : 'urdf'];
+  $('convNote').textContent = CONV_NOTE[$('conv').value];
+  if (isDH()) {
+    const full = dhBase();
+    DH.forEach((p, i) => {
+      const q = +robot.joints[p.joint].angle, th = dhTheta(p, q);
+      const A = dhA(th, p.d, p.a, p.al * D2R); full.multiply(A);
+      document.querySelector(`[data-th="dh${i}"]`).textContent = `q${i+1} = ${(q/D2R).toFixed(1)}°  →  θ${i+1} = ${(th/D2R).toFixed(2)}°`;
+      document.querySelector(`[data-joint="dh${i}"]`).innerHTML = numHTML(A);
+    });
+    const t = new THREE.Vector3().setFromMatrixPosition(full).multiplyScalar(1000);
+    $('fullTitle').textContent = 'ᴮT₅';
+    $('fullSub').textContent = '= ᴮT₀ · ⁰A₁ · ¹A₂ · ²A₃ · ³A₄ · ⁴A₅ (at current joint values)';
+    $('full').innerHTML = numHTML(full);
+    // live cross-check against the URDF chain (gripper_frame_link origin = tool tip)
+    robot.updateMatrixWorld(true);
+    const tipLink = robot.links.gripper_frame_link, check = tipLink
+      ? new THREE.Vector3().setFromMatrixPosition(robot.matrixWorld.clone().invert().multiply(tipLink.matrixWorld)).multiplyScalar(1000)
+      : null;
+    $('tip').textContent = `tool tip in base_link: (${t.x.toFixed(1)}, ${t.y.toFixed(1)}, ${t.z.toFixed(1)}) mm`
+      + (check ? `\nURDF tip check: error ${t.distanceTo(check).toFixed(3)} mm` : '');
+    return;
+  }
+  $('fullTitle').textContent = '⁰T_E';
+  $('fullSub').textContent = '= ⁰T₁ · ¹T₂ · ²T₃ · ³T₄ · ⁴T₅ · ⁵T_E (at current joint values)';
   const full = new THREE.Matrix4();
   CHAIN.forEach((p, i) => {
     const j = robot.joints[p.joint]; if (!j) return;
@@ -317,6 +428,13 @@ function load(file) {
       const rel = rootInv.clone().multiply(link.matrixWorld);
       zupRot[name] = new THREE.Matrix4().extractRotation(rel).transpose();
     }
+    for (const k in dhRel) delete dhRel[k];
+    let F = dhBase();
+    DH_LINKS.forEach((name, i) => {
+      if (i > 0) { const p = DH[i-1]; F = F.clone().multiply(dhA(dhTheta(p, 0), p.d, p.a, p.al * D2R)); }
+      const link = r.links[name]; if (!link) return;
+      dhRel[name] = rootInv.clone().multiply(link.matrixWorld).invert().multiply(F);
+    });
     for (const [name, link] of Object.entries(r.links)) {
       const ax = makeFrame(); ax.userData.link = name; link.add(ax); linkAxes.push(ax);
       const l = label(name); l.userData.link = name; link.add(l); linkLabels.push(l);
@@ -329,6 +447,13 @@ function load(file) {
       const l = label(name, 'joint'); l.position.copy(dir.clone().multiplyScalar(0.065)); j.add(l); jointLabels.push(l);
     }
     buildJoints(); buildTree(); applyDisplay(); buildTransforms(file);
+    // optional ?q=a,b,c,d,e (rad) sets shoulder_pan … wrist_roll
+    const qv = (new URLSearchParams(location.search).get('q') || '').split(',').filter(Boolean).map(Number);
+    const sliders = [...document.querySelectorAll('#joints .j')];
+    DH.slice(0, qv.length).forEach((p, i) => {
+      const s = sliders.find(d => d.firstChild.textContent.trim() === p.joint)?.querySelector('input');
+      if (s) { s.value = qv[i]; s.oninput(); }
+    });
   });
 }
 
@@ -372,17 +497,25 @@ function applyDisplay() {
       o.material = $('transparent').checked ? meshMat : o.userData.origMat;
     }
   });
-  const fk = $('fkMode').checked, z = zup();
-  const keep = o => !fk || o.userData.link in FK_FRAMES;
+  const fk = $('fkMode').checked, z = zup(), dh = isDH();
+  // DH mode: frames are DH_LINKS only; the tool frame {5} replaces {E}
+  const keep = o => !fk || (dh ? DH_LINKS.includes(o.userData.link) : o.userData.link in FK_FRAMES);
   linkAxes.forEach(f => {
-    f.visible = $('showLinkAxes').checked && keep(f); f.children.forEach(a => sizeArrow(a, s, t));
-    if (z && zupRot[f.userData.link]) f.quaternion.setFromRotationMatrix(zupRot[f.userData.link]);
-    else f.quaternion.identity();
+    f.visible = $('showLinkAxes').checked && keep(f);
+    f.children.forEach(a => a.isGroup && a.children.length === 2 && sizeArrow(a, s, t));
+    const n = f.userData.link;
+    f.position.set(0, 0, 0); f.quaternion.identity();
+    if (dh && dhRel[n]) dhRel[n].decompose(f.position, f.quaternion, new THREE.Vector3());
+    else if (z && zupRot[n]) f.quaternion.setFromRotationMatrix(zupRot[n]);
   });
   linkLabels.forEach(l => {
     l.visible = $('showLinkLabels').checked && keep(l);
-    const txt = fk ? FK_FRAMES[l.userData.link] ?? '' : l.userData.link;
+    const n = l.userData.link, i = DH_LINKS.indexOf(n);
+    const txt = fk ? (dh ? DH_LABELS[i] ?? '' : FK_FRAMES[n] ?? '') : n;
     l.element.textContent = fk && z ? txt.replace(/θ(\d)/, 'q$1') : txt;
+    // keep the label on the frame origin it names
+    l.position.set(0, 0, 0);
+    if (dh && dhRel[n]) l.position.setFromMatrixPosition(dhRel[n]);
   });
   jointAxes.forEach(a => { a.visible = $('showJointAxis').checked && !fk; sizeArrow(a, s * 1.5, t * 0.8); });
   jointLabels.forEach(l => l.visible = $('showJointLabels').checked && !fk);
@@ -417,13 +550,16 @@ $('savePng').onclick = () => {
   .forEach(id => $(id).addEventListener('input', applyDisplay));
 $('file').onchange = e => load(e.target.value);
 $('showDims').oninput = applyDims;
-$('conv').onchange = () => { applyDisplay(); updateTransforms(); };
+$('conv').onchange = () => { applyDisplay(); buildTransforms($('file').value); };
 $('tfToggle').onclick = () => $('tf').classList.toggle('hidden');
 $('zero').onclick = () => { document.querySelectorAll('#joints input').forEach(i => { i.value = 0; i.oninput(); }); };
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight); labelRenderer.setSize(innerWidth, innerHeight);
 });
+// optional ?conv=dh|zup|urdf in the URL
+const qs = new URLSearchParams(location.search);
+if (['dh','zup','urdf'].includes(qs.get('conv'))) $('conv').value = qs.get('conv');
 load($('file').value);
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); labelRenderer.render(scene, camera); });
 </script>
