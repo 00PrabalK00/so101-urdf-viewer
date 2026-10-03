@@ -1,0 +1,239 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SO101 URDF Viewer</title>
+<style>
+  body { margin:0; overflow:hidden; font:13px system-ui, sans-serif; background:#1e1f24; color:#ddd; }
+  #panel { position:absolute; top:0; left:0; width:300px; max-height:100vh; overflow:auto; background:rgba(20,20,25,.9); padding:12px; box-sizing:border-box; }
+  h3 { margin:6px 0; font-size:14px; }
+  label { display:block; margin:4px 0; }
+  .j { margin:6px 0; }
+  .j input { width:100%; }
+  .val { float:right; color:#9cf; }
+  .lbl { color:#fff; font:11px monospace; background:rgba(0,0,0,.55); padding:1px 4px; border-radius:3px; pointer-events:none; }
+  .lbl.joint { color:#ffcf6b; }
+  pre { font-size:11px; white-space:pre; color:#bbb; }
+  select { width:100%; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/": "https://unpkg.com/three@0.160.0/",
+  "urdf-loader": "https://unpkg.com/urdf-loader@0.12.3/src/URDFLoader.js"
+} }
+</script>
+</head>
+<body>
+<div id="panel">
+  <h3>URDF</h3>
+  <select id="file">
+    <option>so101_new_calib.urdf</option>
+    <option>so101_new_calib_camera.urdf</option>
+    <option>so101_old_calib.urdf</option>
+    <option>so101_leader_new_calib.urdf</option>
+  </select>
+  <h3>Display</h3>
+  <label><input type="checkbox" id="fkMode" checked> <b>FK frames only</b> ({0}…{5}, {E})</label>
+  <label><input type="checkbox" id="lightBg"> White background</label>
+  <button id="savePng">Save PNG (with labels)</button>
+  <label><input type="checkbox" id="showMesh" checked> Meshes</label>
+  <label><input type="checkbox" id="transparent" checked> Transparent meshes</label>
+  <label><input type="checkbox" id="showLinkAxes" checked> Link frames</label>
+  <label><input type="checkbox" id="showLinkLabels" checked> Link labels</label>
+  <label><input type="checkbox" id="showJointAxis" checked> Joint axes (yellow)</label>
+  <label><input type="checkbox" id="showJointLabels"> Joint labels</label>
+  <label>Axis size <input type="range" id="axSize" min="0.01" max="0.1" step="0.005" value="0.04"></label>
+  <label>Axis thickness <input type="range" id="axThick" min="0.5" max="6" step="0.25" value="2.5"></label>
+  <h3>Joints <button id="zero">zero</button></h3>
+  <div id="joints"></div>
+  <h3>Tree</h3>
+  <pre id="tree"></pre>
+  <div style="color:#888">X red · Y green · Z blue</div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import URDFLoader from 'urdf-loader';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1e1f24);
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.001, 10);
+camera.position.set(0.45, 0.35, 0.45);
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(innerWidth, innerHeight);
+Object.assign(labelRenderer.domElement.style, { position:'absolute', top:'0', pointerEvents:'none' });
+document.body.appendChild(labelRenderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.15, 0);
+controls.update();
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
+const dl = new THREE.DirectionalLight(0xffffff, 1.5); dl.position.set(1,2,1); scene.add(dl);
+const grid = new THREE.GridHelper(1, 20, 0x555555, 0x333333); scene.add(grid);
+// world frame (Z-up shown in robot coordinates)
+const world = new THREE.Group(); world.rotation.x = -Math.PI/2; scene.add(world);
+
+const $ = id => document.getElementById(id);
+let robot = null, linkAxes = [], linkLabels = [], jointAxes = [], jointLabels = [];
+const meshMat = new THREE.MeshStandardMaterial({ color:0xd8d8d8, metalness:0.1, roughness:0.6, transparent:true, opacity:0.45, depthWrite:false });
+
+// WebGL ignores line width, so frames are built from solid cylinder + cone meshes.
+const axisMats = [0xff3b3b, 0x3bdc4a, 0x3b7bff, 0xffcf6b].map(c => new THREE.MeshBasicMaterial({ color:c }));
+const shaftGeo = new THREE.CylinderGeometry(1, 1, 1, 12); shaftGeo.translate(0, 0.5, 0);
+const headGeo = new THREE.ConeGeometry(1, 1, 16); headGeo.translate(0, 0.5, 0);
+const Y = new THREE.Vector3(0, 1, 0);
+
+function meshArrow(mat) {
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(shaftGeo, mat), new THREE.Mesh(headGeo, mat));
+  return g;
+}
+// length in metres, thickness = shaft radius in mm
+function sizeArrow(g, length, thick) {
+  const r = thick / 1000, head = Math.min(length * 0.3, r * 6);
+  const [shaft, cone] = g.children;
+  shaft.scale.set(r, length - head, r);
+  cone.scale.set(r * 2.2, head, r * 2.2);
+  cone.position.y = length - head;
+}
+function makeFrame() {
+  const g = new THREE.Group();
+  [new THREE.Vector3(1,0,0), Y, new THREE.Vector3(0,0,1)].forEach((d, i) => {
+    const a = meshArrow(axisMats[i]); a.quaternion.setFromUnitVectors(Y, d); g.add(a);
+  });
+  return g;
+}
+
+// Frames used for forward kinematics: base, one per revolute joint (z = rotation axis), tool.
+const FK_FRAMES = {
+  base_link:          '{0} base',
+  shoulder_link:      '{1} shoulder_pan θ1',
+  upper_arm_link:     '{2} shoulder_lift θ2',
+  lower_arm_link:     '{3} elbow_flex θ3',
+  wrist_link:         '{4} wrist_flex θ4',
+  gripper_link:       '{5} wrist_roll θ5',
+  gripper_frame_link: '{E} end-effector',
+};
+
+function label(text, cls) {
+  const d = document.createElement('div'); d.className = 'lbl ' + (cls||''); d.textContent = text;
+  return new CSS2DObject(d);
+}
+
+function load(file) {
+  if (robot) { world.remove(robot); robot = null; }
+  linkAxes = []; linkLabels = []; jointAxes = []; jointLabels = [];
+  const loader = new URDFLoader();
+  loader.load(file, r => {
+    robot = r; world.add(r);
+    r.traverse(o => { if (o.isMesh) { o.userData.origMat = o.material; } });
+    for (const [name, link] of Object.entries(r.links)) {
+      const ax = makeFrame(); ax.userData.link = name; link.add(ax); linkAxes.push(ax);
+      const l = label(name); l.userData.link = name; link.add(l); linkLabels.push(l);
+    }
+    for (const [name, j] of Object.entries(r.joints)) {
+      if (j.jointType === 'fixed') continue;
+      const dir = j.axis.clone().normalize();
+      const arrow = meshArrow(axisMats[3]); arrow.quaternion.setFromUnitVectors(Y, dir);
+      j.add(arrow); jointAxes.push(arrow);
+      const l = label(name, 'joint'); l.position.copy(dir.clone().multiplyScalar(0.065)); j.add(l); jointLabels.push(l);
+    }
+    buildJoints(); buildTree(); applyDisplay();
+  });
+}
+
+function buildJoints() {
+  const box = $('joints'); box.innerHTML = '';
+  for (const [name, j] of Object.entries(robot.joints)) {
+    if (j.jointType === 'fixed') continue;
+    const lo = j.limit.lower ?? -Math.PI, hi = j.limit.upper ?? Math.PI;
+    const div = document.createElement('div'); div.className = 'j';
+    div.innerHTML = `${name} <span class="val">0.00</span><input type="range" min="${lo}" max="${hi}" step="0.001" value="0">`;
+    const inp = div.querySelector('input'), val = div.querySelector('.val');
+    inp.oninput = () => { robot.setJointValue(name, +inp.value); val.textContent = (+inp.value).toFixed(2) + ' rad'; };
+    box.appendChild(div);
+  }
+}
+
+function buildTree() {
+  const lines = [];
+  const walk = (o, d) => {
+    for (const c of o.children) {
+      if (c.isURDFJoint) {
+        const p = c.position, r = c.rotation;
+        lines.push(`${'  '.repeat(d)}└ ${c.name} [${c.jointType}]`);
+        lines.push(`${'  '.repeat(d+1)}xyz ${p.x.toFixed(4)} ${p.y.toFixed(4)} ${p.z.toFixed(4)}`);
+        lines.push(`${'  '.repeat(d+1)}rpy ${r.x.toFixed(3)} ${r.y.toFixed(3)} ${r.z.toFixed(3)}`);
+        if (c.jointType !== 'fixed') lines.push(`${'  '.repeat(d+1)}axis ${c.axis.toArray().map(v=>v.toFixed(2)).join(' ')}`);
+        walk(c, d+1);
+      } else if (c.isURDFLink) { lines.push(`${'  '.repeat(d)}${c.name}`); walk(c, d); }
+    }
+  };
+  lines.push(robot.name || 'robot'); walk(robot, 0);
+  $('tree').textContent = lines.join('\n');
+}
+
+function applyDisplay() {
+  if (!robot) return;
+  const s = +$('axSize').value, t = +$('axThick').value;
+  robot.traverse(o => {
+    if (o.isMesh && o.userData.origMat) {
+      o.visible = $('showMesh').checked;
+      o.material = $('transparent').checked ? meshMat : o.userData.origMat;
+    }
+  });
+  const fk = $('fkMode').checked;
+  const keep = o => !fk || o.userData.link in FK_FRAMES;
+  linkAxes.forEach(f => { f.visible = $('showLinkAxes').checked && keep(f); f.children.forEach(a => sizeArrow(a, s, t)); });
+  linkLabels.forEach(l => {
+    l.visible = $('showLinkLabels').checked && keep(l);
+    l.element.textContent = fk ? FK_FRAMES[l.userData.link] ?? '' : l.userData.link;
+  });
+  jointAxes.forEach(a => { a.visible = $('showJointAxis').checked && !fk; sizeArrow(a, s * 1.5, t * 0.8); });
+  jointLabels.forEach(l => l.visible = $('showJointLabels').checked && !fk);
+  const light = $('lightBg').checked;
+  scene.background.set(light ? 0xffffff : 0x1e1f24);
+  grid.visible = !light;
+  meshMat.color.set(light ? 0x9aa3ad : 0xd8d8d8);
+}
+
+// Canvas export: render, then paint the visible HTML labels onto the image.
+$('savePng').onclick = () => {
+  renderer.render(scene, camera);
+  const src = renderer.domElement, out = document.createElement('canvas');
+  out.width = src.width; out.height = src.height;
+  const ctx = out.getContext('2d'); ctx.drawImage(src, 0, 0);
+  const k = devicePixelRatio, v = new THREE.Vector3();
+  ctx.font = `bold ${13 * k}px monospace`; ctx.textBaseline = 'middle';
+  for (const l of [...linkLabels, ...jointLabels]) {
+    if (!l.visible || !l.element.textContent) continue;
+    let shown = true; l.traverseAncestors(a => { if (!a.visible) shown = false; });
+    if (!shown) continue;
+    l.getWorldPosition(v).project(camera);
+    const x = (v.x + 1) / 2 * out.width + 8 * k, y = (1 - v.y) / 2 * out.height;
+    const w = ctx.measureText(l.element.textContent).width;
+    ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fillRect(x - 4 * k, y - 10 * k, w + 8 * k, 20 * k);
+    ctx.fillStyle = '#fff'; ctx.fillText(l.element.textContent, x, y);
+  }
+  const a = document.createElement('a'); a.download = 'so101_fk_frames.png'; a.href = out.toDataURL(); a.click();
+};
+
+['fkMode','lightBg','showMesh','transparent','showLinkAxes','showLinkLabels','showJointAxis','showJointLabels','axSize','axThick']
+  .forEach(id => $(id).addEventListener('input', applyDisplay));
+$('file').onchange = e => load(e.target.value);
+$('zero').onclick = () => { document.querySelectorAll('#joints input').forEach(i => { i.value = 0; i.oninput(); }); };
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight); labelRenderer.setSize(innerWidth, innerHeight);
+});
+load($('file').value);
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); labelRenderer.render(scene, camera); });
+</script>
+</body>
+</html>
