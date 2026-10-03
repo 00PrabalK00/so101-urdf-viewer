@@ -4,26 +4,45 @@
 <meta charset="utf-8">
 <title>SO101 URDF Viewer</title>
 <style>
-  body { margin:0; overflow:hidden; font:13px system-ui, sans-serif; background:#1e1f24; color:#ddd; }
-  #panel { position:absolute; top:0; left:0; width:300px; max-height:100vh; overflow:auto; background:rgba(20,20,25,.9); padding:12px; box-sizing:border-box; }
-  h3 { margin:6px 0; font-size:14px; }
+  body { margin:0; overflow:hidden; font:14px system-ui, sans-serif; background:#1e1f24; color:#e4e4e4; }
+  #panel { position:absolute; z-index:10; top:0; left:0; width:300px; height:100vh; overflow:auto; background:#16171b; border-right:1px solid #2c2d33; padding:12px; box-sizing:border-box; }
+  h3 { margin:10px 0 6px; font-size:15px; }
   label { display:block; margin:4px 0; }
   .j { margin:6px 0; }
   .j input { width:100%; }
   .val { float:right; color:#9cf; }
-  .lbl { color:#fff; font:12px monospace; background:rgba(0,0,0,.55); padding:1px 4px; border-radius:3px; pointer-events:none; }
+  .lbl { color:#fff; font:12px monospace; background:rgba(0,0,0,.6); padding:1px 4px; border-radius:3px; pointer-events:none; }
   .lbl.joint { color:#ffcf6b; }
+  .lbl.dim { color:#7fe0ff; }
   pre { font-size:12px; white-space:pre; color:#bbb; }
   select { width:100%; }
-  #tf { position:absolute; top:0; right:0; width:400px; max-height:100vh; overflow:auto; background:rgba(20,20,25,.92); padding:12px; box-sizing:border-box; }
+  .note { color:#9a9aa3; font-size:13px; line-height:1.4; }
+
+  #tfToggle { position:absolute; z-index:11; top:10px; right:10px; font-size:14px; padding:4px 10px; }
+  #tf { position:absolute; z-index:10; top:0; right:0; width:470px; height:100vh; overflow:auto; background:#16171b; border-left:1px solid #2c2d33; padding:48px 16px 24px; box-sizing:border-box; }
   #tf.hidden { display:none; }
-  #tfToggle { position:absolute; top:8px; right:8px; z-index:2; }
-  .pair { border-top:1px solid #333; padding:6px 0; }
-  .pair h4 { margin:2px 0; font-size:13px; color:#9cf; }
-  .src { font:12px monospace; color:#8a8; }
-  .sym { color:#ddd; }
-  .num { color:#ffcf6b; }
-  .lbl.dim { color:#7fe0ff; }
+  #tf h2 { font-size:17px; margin:0 0 8px; }
+  .opts { background:#1f2026; border-radius:6px; padding:8px 10px; margin:8px 0 12px; }
+  .card { background:#1f2026; border:1px solid #2c2d33; border-radius:8px; padding:12px 14px; margin:12px 0; }
+  .card h4 { margin:0 0 2px; font-size:18px; color:#fff; }
+  .card .sub { color:#9cf; font-size:14px; margin-bottom:8px; }
+  .facts { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:13px; margin:6px 0 10px; }
+  .facts span:nth-child(odd) { color:#9a9aa3; }
+  .facts span:nth-child(even) { font-family:ui-monospace, Consolas, monospace; color:#cfe8cf; word-break:break-all; }
+  .facts b { color:#7fe0ff; font-weight:600; }
+  .mlabel { color:#9a9aa3; font-size:12px; text-transform:uppercase; letter-spacing:.05em; margin:10px 0 4px; }
+  .mat { display:inline-grid; grid-template-columns:repeat(4, auto); column-gap:18px; row-gap:3px; padding:4px 12px;
+         border-left:2px solid #888; border-right:2px solid #888; border-radius:6px; font:15px ui-monospace, Consolas, monospace; }
+  .mat span { text-align:right; min-width:3.2em; }
+  .mat span.t { color:#7fe0ff; }          /* translation column */
+  .mat span.v { color:#ffd27a; }          /* depends on θ */
+  .mat span.z { color:#6c6c74; }          /* zero / constant row */
+  .mat.num span { color:#ffd27a; }
+  .mat.num span.t { color:#7fe0ff; }
+  .mat.num span.z { color:#6c6c74; }
+  .theta { font:14px ui-monospace, Consolas, monospace; color:#ffd27a; margin:4px 0; }
+  .eq { font-size:13px; color:#cfcfd6; margin:4px 0; }
+  .tip { font:15px ui-monospace, Consolas, monospace; color:#7fe0ff; margin-top:8px; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -58,15 +77,26 @@
   <div id="joints"></div>
   <h3>Tree</h3>
   <pre id="tree"></pre>
-  <div style="color:#888">X red · Y green · Z blue</div>
+  <div class="note">X red · Y green · Z blue</div>
 </div>
 <button id="tfToggle">Transforms ⇆</button>
 <div id="tf">
-  <h3 style="margin-top:28px">Consecutive transforms ⁱ⁻¹Tᵢ (mm)</h3>
-  <label><input type="checkbox" id="showDims" checked> Show link lengths in 3D</label>
-  <div style="color:#888;font-size:12px">ⁱ⁻¹Tᵢ = Trans(xyz)·Rot(rpy)·Rz(θᵢ), all values read live from the loaded URDF. cᵢ = cos θᵢ, sᵢ = sin θᵢ.</div>
+  <h2>Consecutive transforms ⁱ⁻¹Tᵢ</h2>
+  <div class="note">ⁱ⁻¹Tᵢ = Trans(xyz) · Rot(rpy) · Rz(θᵢ). Lengths in mm. cᵢ = cos θᵢ, sᵢ = sin θᵢ.
+    Values are read live from the loaded URDF.</div>
+  <div class="opts">
+    <label><input type="checkbox" id="showDims" checked> Show link lengths in 3D</label>
+    <label><input type="checkbox" id="unflip"> Unflip {1} (Z1 up, X1 forward, θ1′ = −θ1)</label>
+    <div class="note">Unflipping changes only ⁰T₁ and ¹T₂. ⁰T_E is identical.</div>
+  </div>
+  <div class="note">Colours: <span style="color:#ffd27a">θ-dependent</span> · <span style="color:#7fe0ff">translation (mm)</span> · <span style="color:#6c6c74">constant</span></div>
   <div id="pairs"></div>
-  <div class="pair"><h4>⁰T_E = ⁰T₁·¹T₂·²T₃·³T₄·⁴T₅·⁵T_E</h4><pre class="num" id="full"></pre></div>
+  <div class="card">
+    <h4>⁰T_E</h4>
+    <div class="sub">= ⁰T₁ · ¹T₂ · ²T₃ · ³T₄ · ⁴T₅ · ⁵T_E (at current θ)</div>
+    <div class="mat num" id="full"></div>
+    <div class="tip" id="tip"></div>
+  </div>
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -84,7 +114,7 @@ renderer.setPixelRatio(devicePixelRatio);
 document.body.appendChild(renderer.domElement);
 const labelRenderer = new CSS2DRenderer();
 labelRenderer.setSize(innerWidth, innerHeight);
-Object.assign(labelRenderer.domElement.style, { position:'absolute', top:'0', pointerEvents:'none' });
+Object.assign(labelRenderer.domElement.style, { position:'absolute', top:'0', pointerEvents:'none', zIndex:'1' });
 document.body.appendChild(labelRenderer.domElement);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 0.15, 0);
@@ -138,50 +168,40 @@ const FK_FRAMES = {
   gripper_frame_link: '{E} end-effector',
 };
 
-// Consecutive FK pairs. Symbolic forms were derived by hand from so101_new_calib.urdf
-// and checked element-wise against the URDF and so101_new_calib.xml (MJCF).
+// Consecutive FK pairs (top 3 rows; bottom row is always 0 0 0 1). Symbolic forms were derived
+// by hand from so101_new_calib.urdf and checked element-wise against the URDF and so101_new_calib.xml.
 const CHAIN = [
-  { joint:'shoulder_pan',        name:'⁰T₁', from:'{0} base',          to:'{1} shoulder_pan', sym:
-`⎡ -c1   s1   0   38.84 ⎤
-⎢  s1   c1   0    0    ⎥
-⎢  0    0   -1   62.40 ⎥
-⎣  0    0    0    1    ⎦` },
-  { joint:'shoulder_lift',       name:'¹T₂', from:'{1} shoulder_pan',  to:'{2} shoulder_lift', sym:
-`⎡  s2   c2   0  -30.40 ⎤
-⎢  0    0    1  -18.28 ⎥
-⎢  c2  -s2   0  -54.20 ⎥
-⎣  0    0    0    1    ⎦` },
-  { joint:'elbow_flex',          name:'²T₃', from:'{2} shoulder_lift', to:'{3} elbow_flex', sym:
-`⎡ -s3  -c3   0  -112.57 ⎤
-⎢  c3  -s3   0   -28.00 ⎥
-⎢  0    0    1     0    ⎥
-⎣  0    0    0     1    ⎦` },
-  { joint:'wrist_flex',          name:'³T₄', from:'{3} elbow_flex',    to:'{4} wrist_flex', sym:
-`⎡  s4   c4   0  -134.90 ⎤
-⎢ -c4   s4   0     5.20 ⎥
-⎢  0    0    1     0    ⎥
-⎣  0    0    0     1    ⎦` },
-  { joint:'wrist_roll',          name:'⁴T₅', from:'{4} wrist_flex',    to:'{5} wrist_roll', sym:
-`φ = θ5 − 0.0487 rad (2.79°, URDF pitch offset)
-⎡ -cos φ   sin φ   0    0    ⎤
-⎢   0       0      1  -61.10 ⎥
-⎢  sin φ   cos φ   0   18.10 ⎥
-⎣   0       0      0    1    ⎦` },
-  { joint:'gripper_frame_joint', name:'⁵T_E', from:'{5} wrist_roll',   to:'{E} end-effector', sym:
-`⎡ -1   0   0   -7.90 ⎤
-⎢  0   1   0   -0.22 ⎥
-⎢  0   0  -1  -98.13 ⎥
-⎣  0   0   0    1    ⎦
-(fixed — no joint variable)` },
+  { joint:'shoulder_pan', name:'⁰T₁', altName:'⁰T₁′', from:'{0} base', to:'{1} shoulder_pan',
+    sym:   [['-c1','s1','0','38.84'], ['s1','c1','0','0'], ['0','0','-1','62.40']],
+    symAlt:[['c1′','-s1′','0','38.84'], ['s1′','c1′','0','0'], ['0','0','1','62.40']] },
+  { joint:'shoulder_lift', name:'¹T₂', altName:'¹′T₂', from:'{1} shoulder_pan', to:'{2} shoulder_lift',
+    sym:   [['s2','c2','0','-30.40'], ['0','0','1','-18.28'], ['c2','-s2','0','-54.20']],
+    symAlt:[['-s2','-c2','0','30.40'], ['0','0','1','-18.28'], ['-c2','s2','0','54.20']] },
+  { joint:'elbow_flex', name:'²T₃', from:'{2} shoulder_lift', to:'{3} elbow_flex',
+    sym:   [['-s3','-c3','0','-112.57'], ['c3','-s3','0','-28.00'], ['0','0','1','0']] },
+  { joint:'wrist_flex', name:'³T₄', from:'{3} elbow_flex', to:'{4} wrist_flex',
+    sym:   [['s4','c4','0','-134.90'], ['-c4','s4','0','5.20'], ['0','0','1','0']] },
+  { joint:'wrist_roll', name:'⁴T₅', from:'{4} wrist_flex', to:'{5} wrist_roll',
+    eq:'φ = θ5 − 0.0487 rad (2.79°, pitch offset in the URDF rpy)',
+    sym:   [['-cos φ','sin φ','0','0'], ['0','0','1','-61.10'], ['sin φ','cos φ','0','18.10']] },
+  { joint:'gripper_frame_joint', name:'⁵T_E', from:'{5} wrist_roll', to:'{E} end-effector',
+    eq:'fixed — no joint variable',
+    sym:   [['-1','0','0','-7.90'], ['0','1','0','-0.22'], ['0','0','-1','-98.13']] },
 ];
 
-function fmtMat(m) {
-  const e = m.elements, rows = [];
-  for (let r = 0; r < 4; r++) {
-    const row = [0,1,2,3].map(c => { const v = e[c*4 + r] * (c === 3 && r < 3 ? 1000 : 1); return (Math.abs(v) < 5e-5 ? 0 : v).toFixed(c === 3 ? 2 : 4).padStart(c === 3 ? 9 : 8); });
-    rows.push((r === 0 ? '⎡' : r === 3 ? '⎣' : '⎢') + row.join(' ') + (r === 0 ? ' ⎤' : r === 3 ? ' ⎦' : ' ⎥'));
+const isVar = s => /[cs]\d|φ/.test(s);
+function symHTML(rows) {
+  return [...rows, ['0','0','0','1']].map((r, ri) => r.map((v, c) =>
+    `<span class="${ri === 3 ? 'z' : c === 3 ? 't' : isVar(v) ? 'v' : 'z'}">${v}</span>`).join('')).join('');
+}
+function numHTML(m) {
+  const e = m.elements; let h = '';
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+    let v = e[c*4 + r] * (c === 3 && r < 3 ? 1000 : 1);
+    if (Math.abs(v) < 5e-4) v = 0;
+    h += `<span class="${r === 3 ? 'z' : c === 3 ? 't' : ''}">${v.toFixed(c === 3 ? 2 : 3)}</span>`;
   }
-  return rows.join('\n');
+  return h;
 }
 
 let dimObjs = [];
@@ -195,12 +215,21 @@ function buildTransforms(file) {
     const o = j.urdfNode?.querySelector('origin');
     const xyz = o?.getAttribute('xyz') ?? '', rpy = o?.getAttribute('rpy') ?? '';
     const len = j.position.length() * 1000;
-    const div = document.createElement('div'); div.className = 'pair';
-    div.innerHTML = `<h4>${p.name}: ${p.from} → ${p.to}</h4>
-      <div class="src">URDF &lt;joint name="${p.joint}" type="${j.jointType}"&gt;<br>origin xyz="${xyz}" (m)<br>origin rpy="${rpy}" (rad)<br>axis="${j.jointType === 'fixed' ? '–' : j.axis.toArray().join(' ')}"${j.limit && j.jointType !== 'fixed' ? `  limits [${(j.limit.lower*180/Math.PI).toFixed(1)}°, ${(j.limit.upper*180/Math.PI).toFixed(1)}°]` : ''}</div>
-      <div class="src">offset length |xyz| = ${len.toFixed(2)} mm</div>
-      ${exact ? `<div style="color:#888;font-size:12px">symbolic</div><pre class="sym">${p.sym}</pre>` : ''}
-      <div style="color:#888;font-size:12px">numeric at current θ</div><pre class="num" data-joint="${p.joint}"></pre>`;
+    const lim = j.jointType !== 'fixed' ? `${(j.limit.lower*180/Math.PI).toFixed(1)}° … ${(j.limit.upper*180/Math.PI).toFixed(1)}°` : '–';
+    const div = document.createElement('div'); div.className = 'card';
+    div.innerHTML = `<h4 data-h="${p.joint}"></h4><div class="sub" data-sub="${p.joint}"></div>
+      <div class="facts">
+        <span>URDF joint</span><span>${p.joint} (${j.jointType})</span>
+        <span>origin xyz</span><span>${xyz} m</span>
+        <span>origin rpy</span><span>${rpy} rad</span>
+        <span>axis</span><span>${j.jointType === 'fixed' ? '–' : j.axis.toArray().join(' ')}</span>
+        <span>limits</span><span>${lim}</span>
+        <span>offset length</span><span><b>${len.toFixed(2)} mm</b></span>
+      </div>
+      ${exact ? `<div class="mlabel">Symbolic</div>${p.eq ? `<div class="eq">${p.eq}</div>` : ''}<div class="eq" data-eq="${p.joint}"></div><div class="mat" data-sym="${p.joint}"></div>` : ''}
+      <div class="mlabel">Numeric at current θ</div>
+      <div class="theta" data-th="${p.joint}"></div>
+      <div class="mat num" data-joint="${p.joint}"></div>`;
     box.appendChild(div);
     // dimension line from parent frame origin to this frame's origin, drawn in the parent frame
     const parent = j.parent;
@@ -212,17 +241,31 @@ function buildTransforms(file) {
   updateTransforms(); applyDims();
 }
 
+// {1′} = {1} rotated 180° about Y: ⁰T₁′ = ⁰T₁·F and ¹′T₂ = F·¹T₂ (F = F⁻¹), so the chain product is unchanged.
+const F = new THREE.Matrix4().makeRotationY(Math.PI);
 function updateTransforms() {
   if (!robot) return;
+  const unflip = $('unflip').checked;
+  const fl = s => unflip ? s.replace('{1}', '{1′}') : s;
   const full = new THREE.Matrix4();
   for (const p of CHAIN) {
     const j = robot.joints[p.joint]; if (!j) continue;
     j.updateMatrix(); full.multiply(j.matrix);
-    const pre = document.querySelector(`pre[data-joint="${p.joint}"]`);
-    if (pre) pre.textContent = (j.jointType === 'fixed' ? '' : `θ = ${(+j.angle).toFixed(3)} rad (${(j.angle*180/Math.PI).toFixed(1)}°)\n`) + fmtMat(j.matrix);
+    const alt = unflip && p.symAlt;
+    let m = j.matrix, ang = +j.angle, th = 'θ' + (CHAIN.indexOf(p) + 1);
+    if (alt && p.joint === 'shoulder_pan') { m = j.matrix.clone().multiply(F); ang = -ang; th = 'θ1′'; }
+    if (alt && p.joint === 'shoulder_lift') m = F.clone().multiply(j.matrix);
+    const q = s => document.querySelector(s);
+    q(`[data-h="${p.joint}"]`).textContent = alt ? p.altName : p.name;
+    q(`[data-sub="${p.joint}"]`).textContent = `${fl(p.from)} → ${fl(p.to)}`;
+    const sym = q(`[data-sym="${p.joint}"]`); if (sym) sym.innerHTML = symHTML(alt ? p.symAlt : p.sym);
+    const eq = q(`[data-eq="${p.joint}"]`); if (eq) eq.textContent = alt && p.joint === 'shoulder_pan' ? 'θ1′ = −θ1' : '';
+    q(`[data-th="${p.joint}"]`).textContent = j.jointType === 'fixed' ? 'fixed' : `${th} = ${ang.toFixed(3)} rad  (${(ang*180/Math.PI).toFixed(1)}°)`;
+    q(`[data-joint="${p.joint}"]`).innerHTML = numHTML(m);
   }
   const t = new THREE.Vector3().setFromMatrixPosition(full).multiplyScalar(1000);
-  $('full').textContent = fmtMat(full) + `\n\nend-effector position in {0}: (${t.x.toFixed(1)}, ${t.y.toFixed(1)}, ${t.z.toFixed(1)}) mm`;
+  $('full').innerHTML = numHTML(full);
+  $('tip').textContent = `end-effector in {0}: (${t.x.toFixed(1)}, ${t.y.toFixed(1)}, ${t.z.toFixed(1)}) mm`;
 }
 function applyDims() { dimObjs.forEach(o => o.visible = $('showDims').checked); }
 
@@ -293,12 +336,16 @@ function applyDisplay() {
       o.material = $('transparent').checked ? meshMat : o.userData.origMat;
     }
   });
-  const fk = $('fkMode').checked;
+  const fk = $('fkMode').checked, unflip = $('unflip').checked;
   const keep = o => !fk || o.userData.link in FK_FRAMES;
-  linkAxes.forEach(f => { f.visible = $('showLinkAxes').checked && keep(f); f.children.forEach(a => sizeArrow(a, s, t)); });
+  linkAxes.forEach(f => {
+    f.visible = $('showLinkAxes').checked && keep(f); f.children.forEach(a => sizeArrow(a, s, t));
+    if (f.userData.link === 'shoulder_link') f.rotation.y = unflip ? Math.PI : 0;
+  });
   linkLabels.forEach(l => {
     l.visible = $('showLinkLabels').checked && keep(l);
     l.element.textContent = fk ? FK_FRAMES[l.userData.link] ?? '' : l.userData.link;
+    if (fk && unflip && l.userData.link === 'shoulder_link') l.element.textContent = '{1′} shoulder_pan θ1′ = −θ1';
   });
   jointAxes.forEach(a => { a.visible = $('showJointAxis').checked && !fk; sizeArrow(a, s * 1.5, t * 0.8); });
   jointLabels.forEach(l => l.visible = $('showJointLabels').checked && !fk);
@@ -333,6 +380,7 @@ $('savePng').onclick = () => {
   .forEach(id => $(id).addEventListener('input', applyDisplay));
 $('file').onchange = e => load(e.target.value);
 $('showDims').oninput = applyDims;
+$('unflip').oninput = () => { applyDisplay(); updateTransforms(); };
 $('tfToggle').onclick = () => $('tf').classList.toggle('hidden');
 $('zero').onclick = () => { document.querySelectorAll('#joints input').forEach(i => { i.value = 0; i.oninput(); }); };
 addEventListener('resize', () => {
