@@ -11,10 +11,19 @@
   .j { margin:6px 0; }
   .j input { width:100%; }
   .val { float:right; color:#9cf; }
-  .lbl { color:#fff; font:11px monospace; background:rgba(0,0,0,.55); padding:1px 4px; border-radius:3px; pointer-events:none; }
+  .lbl { color:#fff; font:12px monospace; background:rgba(0,0,0,.55); padding:1px 4px; border-radius:3px; pointer-events:none; }
   .lbl.joint { color:#ffcf6b; }
-  pre { font-size:11px; white-space:pre; color:#bbb; }
+  pre { font-size:12px; white-space:pre; color:#bbb; }
   select { width:100%; }
+  #tf { position:absolute; top:0; right:0; width:400px; max-height:100vh; overflow:auto; background:rgba(20,20,25,.92); padding:12px; box-sizing:border-box; }
+  #tf.hidden { display:none; }
+  #tfToggle { position:absolute; top:8px; right:8px; z-index:2; }
+  .pair { border-top:1px solid #333; padding:6px 0; }
+  .pair h4 { margin:2px 0; font-size:13px; color:#9cf; }
+  .src { font:12px monospace; color:#8a8; }
+  .sym { color:#ddd; }
+  .num { color:#ffcf6b; }
+  .lbl.dim { color:#7fe0ff; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -50,6 +59,14 @@
   <h3>Tree</h3>
   <pre id="tree"></pre>
   <div style="color:#888">X red · Y green · Z blue</div>
+</div>
+<button id="tfToggle">Transforms ⇆</button>
+<div id="tf">
+  <h3 style="margin-top:28px">Consecutive transforms ⁱ⁻¹Tᵢ (mm)</h3>
+  <label><input type="checkbox" id="showDims" checked> Show link lengths in 3D</label>
+  <div style="color:#888;font-size:12px">ⁱ⁻¹Tᵢ = Trans(xyz)·Rot(rpy)·Rz(θᵢ), all values read live from the loaded URDF. cᵢ = cos θᵢ, sᵢ = sin θᵢ.</div>
+  <div id="pairs"></div>
+  <div class="pair"><h4>⁰T_E = ⁰T₁·¹T₂·²T₃·³T₄·⁴T₅·⁵T_E</h4><pre class="num" id="full"></pre></div>
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -121,6 +138,94 @@ const FK_FRAMES = {
   gripper_frame_link: '{E} end-effector',
 };
 
+// Consecutive FK pairs. Symbolic forms were derived by hand from so101_new_calib.urdf
+// and checked element-wise against the URDF and so101_new_calib.xml (MJCF).
+const CHAIN = [
+  { joint:'shoulder_pan',        name:'⁰T₁', from:'{0} base',          to:'{1} shoulder_pan', sym:
+`⎡ -c1   s1   0   38.84 ⎤
+⎢  s1   c1   0    0    ⎥
+⎢  0    0   -1   62.40 ⎥
+⎣  0    0    0    1    ⎦` },
+  { joint:'shoulder_lift',       name:'¹T₂', from:'{1} shoulder_pan',  to:'{2} shoulder_lift', sym:
+`⎡  s2   c2   0  -30.40 ⎤
+⎢  0    0    1  -18.28 ⎥
+⎢  c2  -s2   0  -54.20 ⎥
+⎣  0    0    0    1    ⎦` },
+  { joint:'elbow_flex',          name:'²T₃', from:'{2} shoulder_lift', to:'{3} elbow_flex', sym:
+`⎡ -s3  -c3   0  -112.57 ⎤
+⎢  c3  -s3   0   -28.00 ⎥
+⎢  0    0    1     0    ⎥
+⎣  0    0    0     1    ⎦` },
+  { joint:'wrist_flex',          name:'³T₄', from:'{3} elbow_flex',    to:'{4} wrist_flex', sym:
+`⎡  s4   c4   0  -134.90 ⎤
+⎢ -c4   s4   0     5.20 ⎥
+⎢  0    0    1     0    ⎥
+⎣  0    0    0     1    ⎦` },
+  { joint:'wrist_roll',          name:'⁴T₅', from:'{4} wrist_flex',    to:'{5} wrist_roll', sym:
+`φ = θ5 − 0.0487 rad (2.79°, URDF pitch offset)
+⎡ -cos φ   sin φ   0    0    ⎤
+⎢   0       0      1  -61.10 ⎥
+⎢  sin φ   cos φ   0   18.10 ⎥
+⎣   0       0      0    1    ⎦` },
+  { joint:'gripper_frame_joint', name:'⁵T_E', from:'{5} wrist_roll',   to:'{E} end-effector', sym:
+`⎡ -1   0   0   -7.90 ⎤
+⎢  0   1   0   -0.22 ⎥
+⎢  0   0  -1  -98.13 ⎥
+⎣  0   0   0    1    ⎦
+(fixed — no joint variable)` },
+];
+
+function fmtMat(m) {
+  const e = m.elements, rows = [];
+  for (let r = 0; r < 4; r++) {
+    const row = [0,1,2,3].map(c => { const v = e[c*4 + r] * (c === 3 && r < 3 ? 1000 : 1); return (Math.abs(v) < 5e-5 ? 0 : v).toFixed(c === 3 ? 2 : 4).padStart(c === 3 ? 9 : 8); });
+    rows.push((r === 0 ? '⎡' : r === 3 ? '⎣' : '⎢') + row.join(' ') + (r === 0 ? ' ⎤' : r === 3 ? ' ⎦' : ' ⎥'));
+  }
+  return rows.join('\n');
+}
+
+let dimObjs = [];
+function buildTransforms(file) {
+  const box = $('pairs'); box.innerHTML = '';
+  dimObjs.forEach(o => o.parent && o.parent.remove(o)); dimObjs = [];
+  const exact = file === 'so101_new_calib.urdf';
+  for (const p of CHAIN) {
+    const j = robot.joints[p.joint];
+    if (!j) continue;
+    const o = j.urdfNode?.querySelector('origin');
+    const xyz = o?.getAttribute('xyz') ?? '', rpy = o?.getAttribute('rpy') ?? '';
+    const len = j.position.length() * 1000;
+    const div = document.createElement('div'); div.className = 'pair';
+    div.innerHTML = `<h4>${p.name}: ${p.from} → ${p.to}</h4>
+      <div class="src">URDF &lt;joint name="${p.joint}" type="${j.jointType}"&gt;<br>origin xyz="${xyz}" (m)<br>origin rpy="${rpy}" (rad)<br>axis="${j.jointType === 'fixed' ? '–' : j.axis.toArray().join(' ')}"${j.limit && j.jointType !== 'fixed' ? `  limits [${(j.limit.lower*180/Math.PI).toFixed(1)}°, ${(j.limit.upper*180/Math.PI).toFixed(1)}°]` : ''}</div>
+      <div class="src">offset length |xyz| = ${len.toFixed(2)} mm</div>
+      ${exact ? `<div style="color:#888;font-size:12px">symbolic</div><pre class="sym">${p.sym}</pre>` : ''}
+      <div style="color:#888;font-size:12px">numeric at current θ</div><pre class="num" data-joint="${p.joint}"></pre>`;
+    box.appendChild(div);
+    // dimension line from parent frame origin to this frame's origin, drawn in the parent frame
+    const parent = j.parent;
+    const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), j.position.clone()]);
+    const line = new THREE.Line(geo, new THREE.LineDashedMaterial({ color:0x7fe0ff, dashSize:0.004, gapSize:0.003, depthTest:false }));
+    line.computeLineDistances(); line.renderOrder = 10; parent.add(line); dimObjs.push(line);
+    const l = label(`${len.toFixed(1)} mm`, 'dim'); l.position.copy(j.position).multiplyScalar(0.5); parent.add(l); dimObjs.push(l);
+  }
+  updateTransforms(); applyDims();
+}
+
+function updateTransforms() {
+  if (!robot) return;
+  const full = new THREE.Matrix4();
+  for (const p of CHAIN) {
+    const j = robot.joints[p.joint]; if (!j) continue;
+    j.updateMatrix(); full.multiply(j.matrix);
+    const pre = document.querySelector(`pre[data-joint="${p.joint}"]`);
+    if (pre) pre.textContent = (j.jointType === 'fixed' ? '' : `θ = ${(+j.angle).toFixed(3)} rad (${(j.angle*180/Math.PI).toFixed(1)}°)\n`) + fmtMat(j.matrix);
+  }
+  const t = new THREE.Vector3().setFromMatrixPosition(full).multiplyScalar(1000);
+  $('full').textContent = fmtMat(full) + `\n\nend-effector position in {0}: (${t.x.toFixed(1)}, ${t.y.toFixed(1)}, ${t.z.toFixed(1)}) mm`;
+}
+function applyDims() { dimObjs.forEach(o => o.visible = $('showDims').checked); }
+
 function label(text, cls) {
   const d = document.createElement('div'); d.className = 'lbl ' + (cls||''); d.textContent = text;
   return new CSS2DObject(d);
@@ -144,7 +249,7 @@ function load(file) {
       j.add(arrow); jointAxes.push(arrow);
       const l = label(name, 'joint'); l.position.copy(dir.clone().multiplyScalar(0.065)); j.add(l); jointLabels.push(l);
     }
-    buildJoints(); buildTree(); applyDisplay();
+    buildJoints(); buildTree(); applyDisplay(); buildTransforms(file);
   });
 }
 
@@ -156,7 +261,7 @@ function buildJoints() {
     const div = document.createElement('div'); div.className = 'j';
     div.innerHTML = `${name} <span class="val">0.00</span><input type="range" min="${lo}" max="${hi}" step="0.001" value="0">`;
     const inp = div.querySelector('input'), val = div.querySelector('.val');
-    inp.oninput = () => { robot.setJointValue(name, +inp.value); val.textContent = (+inp.value).toFixed(2) + ' rad'; };
+    inp.oninput = () => { robot.setJointValue(name, +inp.value); val.textContent = (+inp.value).toFixed(2) + ' rad'; updateTransforms(); };
     box.appendChild(div);
   }
 }
@@ -211,7 +316,7 @@ $('savePng').onclick = () => {
   const ctx = out.getContext('2d'); ctx.drawImage(src, 0, 0);
   const k = devicePixelRatio, v = new THREE.Vector3();
   ctx.font = `bold ${13 * k}px monospace`; ctx.textBaseline = 'middle';
-  for (const l of [...linkLabels, ...jointLabels]) {
+  for (const l of [...linkLabels, ...jointLabels, ...dimObjs.filter(o => o.isCSS2DObject)]) {
     if (!l.visible || !l.element.textContent) continue;
     let shown = true; l.traverseAncestors(a => { if (!a.visible) shown = false; });
     if (!shown) continue;
@@ -227,6 +332,8 @@ $('savePng').onclick = () => {
 ['fkMode','lightBg','showMesh','transparent','showLinkAxes','showLinkLabels','showJointAxis','showJointLabels','axSize','axThick']
   .forEach(id => $(id).addEventListener('input', applyDisplay));
 $('file').onchange = e => load(e.target.value);
+$('showDims').oninput = applyDims;
+$('tfToggle').onclick = () => $('tf').classList.toggle('hidden');
 $('zero').onclick = () => { document.querySelectorAll('#joints input').forEach(i => { i.value = 0; i.oninput(); }); };
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
